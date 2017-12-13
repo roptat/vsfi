@@ -1,0 +1,189 @@
+open Bitstring
+
+module L = Log.Make(struct let name = "decoder" end)
+
+module Make =
+  struct
+    open Data
+    open Asm
+
+    (************************************************************************)
+    (* Generic Helpers *)
+    (************************************************************************)
+
+    (** [const c sz] builds the asm constant of size _sz_ from int _c_ *)
+    let const c sz = Const (Word.of_int (Z.of_int c) sz)
+
+    (** [const_of_Z z sz] builds the asm constant of size _sz_ from Z _z_ *)
+    let const_of_Z z sz = Const (Word.of_int z sz)
+
+    (** sign extension of a Z.int _i_ of _sz_ bits on _nb_ bits *)
+    let sign_extension i sz nb =
+        if Z.testbit i (sz-1) then
+            let ff = (Z.sub (Z.shift_left (Z.one) nb) Z.one) in
+            (* ffff00.. mask *)
+            let ff00 = (Z.logxor ff ((Z.sub (Z.shift_left (Z.one) sz) Z.one))) in
+            Z.logor ff00 i
+        else
+            i
+
+
+    (************************************************************************)
+    (* Creation of the general purpose registers *)
+    (************************************************************************)
+
+    let (register_tbl: (int, Register.t) Hashtbl.t) = Hashtbl.create 8;;
+
+    let eax = Register.make ~name:"eax" ~size:32;;
+    let ecx = Register.make ~name:"ecx" ~size:32;;
+    let edx = Register.make ~name:"edx" ~size:32;;
+    let ebx = Register.make ~name:"ebx" ~size:32;;
+    let esp = Register.make_sp ~name:"esp" ~size:32;;
+    let ebp = Register.make ~name:"ebp" ~size:32;;
+    let esi = Register.make ~name:"esi" ~size:32;;
+    let edi = Register.make ~name:"edi" ~size:32;;
+    let cl = P(ecx, 0, 7);;
+
+    Hashtbl.add register_tbl 0 eax;;
+    Hashtbl.add register_tbl 1 ecx;;
+    Hashtbl.add register_tbl 2 edx;;
+    Hashtbl.add register_tbl 3 ebx;;
+    Hashtbl.add register_tbl 4 esp;;
+    Hashtbl.add register_tbl 5 ebp;;
+    Hashtbl.add register_tbl 6 esi;;
+    Hashtbl.add register_tbl 7 edi;;
+
+
+    (*************************************************************************)
+    (* Creation of the flag registers *)
+    (*************************************************************************)
+    let fcf    = Register.make ~name:"cf" ~size:1;;
+    let fpf    = Register.make ~name:"pf" ~size:1;;
+    let faf    = Register.make ~name:"af" ~size:1;;
+    let fzf    = Register.make ~name:"zf" ~size:1;;
+    let fsf    = Register.make ~name:"sf" ~size:1;;
+    let _ftf   = Register.make ~name:"tf" ~size:1;;
+    let fif    = Register.make ~name:"if" ~size:1;;
+    let fdf    = Register.make ~name:"df" ~size:1;;
+    let fof    = Register.make ~name:"of" ~size:1;;
+    let _fiopl = Register.make ~name:"iopl" ~size:2;;
+    let _fnt   = Register.make ~name:"nt" ~size:1;;
+    let _frf   = Register.make ~name:"rf" ~size:1;;
+    let _fvm   = Register.make ~name:"vm" ~size:1;;
+    let _fac   = Register.make ~name:"ac" ~size:1;;
+    let _fvif  = Register.make ~name:"vif" ~size:1;;
+    let _fvip  = Register.make ~name:"vip" ~size:1;;
+    let _fid   = Register.make ~name:"id" ~size:1;;
+
+
+    (***********************************************************************)
+    (* Creation of the segment registers *)
+    (***********************************************************************)
+    let cs = Register.make ~name:"cs" ~size:16;;
+    let ds = Register.make ~name:"ds" ~size:16;;
+    let ss = Register.make ~name:"ss" ~size:16;;
+    let es = Register.make ~name:"es" ~size:16;;
+    let fs = Register.make ~name:"fs" ~size:16;;
+
+    type segment =
+    | CS
+    | SS
+    | DS
+    | ES
+    | FS
+    | GS
+
+    type rep = | REP | REPNE
+
+    type prefix =
+    | Lock
+    | Rep of rep
+    | Override of segment
+    | OperandOverride
+    | AddressOverride
+
+    type instr = { prefixes: prefix list;
+                   prog: Asm.stmt list;
+                   size: int }
+
+    module IntMap = Elf_info.IntMap
+    type prog = (Asm.stmt list) IntMap.t
+
+    let operands_from_mod_reg_rm bs reg_sz mem_sz direction =
+      bitmatch bs with
+      | { md : 2; reg: 3; rm: 3 } ->
+        let register = if reg_sz = 8 && reg >= 4 then
+                         V (get_h_slice (reg-4))
+                       else
+                         find_reg_v reg reg_sz in
+        let mem = match md with
+                  | n when 0 <= n && n <= 2 -> 
+                     M (add_data_segment bs (md_from_mem bs md rm reg_sz), memsz)
+                  | 3 -> if sz = 8 && rm >= 4 then
+                           V (get_h_slice (rm-4))
+                         else
+                           V (find_reg rm mem_sz)
+                  | _ -> failwith "illegal md value" in
+       let size = match md with
+                  | n when 0 <= n && n <= 2 -> 
+                  | _ -> 1
+       if direction then
+         register, Lval mem, size
+       else
+         mem, Lval register, size
+
+    let add_sub_mrm bs op use_carry size direction =
+      let dst, src, sz = operands_from_mod_reg_rm bs size size direction in
+      (add_sub s op use_carry dst src size, sz)
+
+    let decode_instr_opcode bs {prefixes; prog; size}: intsr =
+      bitmatch bs with
+      | { 0x00 : 8 } -> (* add *)
+                       let (p, sz) = add_sub_mrm (dropbits 8 bs) Add false 8 0
+                       {prefixes = prefixes; prog = p; size = size + sz}
+      | { _ } -> failwith "Unknown opcode"
+
+    let rec decode_instr bs {prefixes; prog; size}: instr =
+      bitmatch bs with
+      | { 0xf0 : 8 } -> decode_instr (dropbits 8 bs)
+                        {prefixes = (Lock :: prefixes); prog = prog; size = size + 1}
+      | { 0xf3 : 8 } -> decode_instr (dropbits 8 bs)
+                        {prefixes = (Rep REP) :: prefixes; prog = prog; size = size + 1}
+      | { 0xf2 : 8 } -> decode_instr (dropbits 8 bs)
+                        {prefixes = (Rep REPNE) :: prefixes; prog = prog; size = size + 1}
+      | { 0x2e : 8 } -> decode_instr (dropbits 8 bs)
+                        {prefixes = (Override CS) :: prefixes; prog = prog; size = size + 1}
+      | { 0x36 : 8 } -> decode_instr (dropbits 8 bs)
+                        {prefixes = (Override SS) :: prefixes; prog = prog; size = size + 1}
+      | { 0x3e : 8 } -> decode_instr (dropbits 8 bs)
+                        {prefixes = (Override DS) :: prefixes; prog = prog; size = size + 1}
+      | { 0x26 : 8 } -> decode_instr (dropbits 8 bs)
+                        {prefixes = (Override ES) :: prefixes; prog = prog; size = size + 1}
+      | { 0x64 : 8 } -> decode_instr (dropbits 8 bs)
+                        {prefixes = (Override FS) :: prefixes; prog = prog; size = size + 1}
+      | { 0x65 : 8 } -> decode_instr (dropbits 8 bs)
+                        {prefixes = (Override GS) :: prefixes; prog = prog; size = size + 1}
+      | { 0x66 : 8 } -> decode_instr (dropbits 8 bs)
+                        {prefixes = OperandOverride :: prefixes; prog = prog; size = size + 1}
+      | { 0x67 : 8 } -> decode_instr (dropbits 8 bs)
+                        {prefixes = AddressOverride :: prefixes; prog = prog; size = size + 1}
+      | { _ } -> decode_instr_opcode bs {prefixes = prefixes; prog = prog; size = size}
+
+    let decode_stmt (bs: bitstring) : (Asm.stmt list * int) =
+      let instr = decode_instr bs {prefixes = []; prog = []; size = 0} in
+      if instr.prefixes = [] then
+        ([Asm.Nop], 1)
+      else
+        failwith (Printf.sprintf "prefix encountered, size = %d" instr.size)
+
+    let rec decode_aux (bs: bitstring) (size: int) (off: int) (prev: prog) =
+      let (code, sz) = decode_stmt bs in
+      if sz >= size then
+         IntMap.add off code prev
+      else
+        decode_aux (dropbits (sz * 8) bs) (size - sz) (off + sz)
+                   (IntMap.add off code prev)
+
+    let decode (bs: bitstring) (size: int) (off: int): prog =
+      decode_aux bs size off IntMap.empty
+  end

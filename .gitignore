@@ -1,0 +1,8 @@
+*.depend
+*.o
+*.cmi
+*.cmx
+*.so
+src/vsfi
+src/vsfi_ver.ml
+src/loader_test
