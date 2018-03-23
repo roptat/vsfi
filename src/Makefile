@@ -51,7 +51,7 @@ CAMLLEX =ocamlfind ocamllex
 CAMLDEP =ocamlfind ocamldep $(DIROPT)
 CAMLDOC =ocamlfind ocamldoc $(DIROPT)
 
-LIBX=unix.cmxa graph.cmxa nums.cmxa str.cmxa zarith.cmxa newspeak.cmxa bigarray.cmxa typedC.cmx bitstring.cmxa
+LIBX=unix.cmxa graph.cmxa nums.cmxa str.cmxa zarith.cmxa newspeak.cmxa bigarray.cmxa bitstring.cmxa
 
 ifeq ($(OS),Windows_NT)
     detected_OS := Windows
