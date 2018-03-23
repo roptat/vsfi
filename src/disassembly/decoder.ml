@@ -292,6 +292,7 @@ struct
       mutable rep: bool;               (** true whenever a REP opcode has been decoded *)
       mutable repe: bool;              (** true whenever a REPE opcode has been decoded *)
       mutable repne: bool;             (** true whenever a REPNE opcode has been decoded *)
+      mutable ret: bool;             (** true whenever a RET opcode has been decoded *)
     }
 
 
@@ -2294,8 +2295,8 @@ struct
 
             | '\xc0' -> (* shift grp2 with byte size*) grp2 s 8 None
             | '\xc1' -> (* shift grp2 with word or double-word size *) grp2 s s.operand_sz None
-            | '\xc2' -> (* RET NEAR and pop word *) return s [ (* pop imm16 *)  set_esp Add (T esp) (s.addr_sz + 16); (jump_of_ret s)]
-            | '\xc3' -> (* RET NEAR *) return s [ set_esp Add (T esp) s.addr_sz; (jump_of_ret s) ]
+            | '\xc2' -> (* RET NEAR and pop word *) s.ret <- true; return s [ (* pop imm16 *)  set_esp Add (T esp) (s.addr_sz + 16); (jump_of_ret s)]
+            | '\xc3' -> (* RET NEAR *) s.ret <- true; return s [ set_esp Add (T esp) s.addr_sz; (jump_of_ret s) ]
             | '\xc4' -> (* LES *) load_far_ptr s es
             | '\xc5' -> (* LDS *) load_far_ptr s ds
             | '\xc6' -> (* MOV with byte *) mov_immediate s 8
@@ -2355,40 +2356,43 @@ struct
             let v, ip = decode s in
             (* TODO: remove this hack *)
             begin
-              match List.hd v(*.Cfa.State.stmts*) with
-              | _ ->
-                 let a'  = Data.Address.add_offset s.a (Z.of_int s.o) in
-                 let zf_stmts =
-                           if s.repe || s.repne then
-                             [ If (Cmp (EQ, Lval (V (T fzf)), Const (c fzf_sz)), [Directive Default_unroll ; Jmp (A a')],
-                       [Jmp (A s.a (*v.Cfa.State.ip*)) ]) ]
-                           else
-                             [ Jmp (A s.a(*v.Cfa.State.ip*)) ]
-                 in
-                 let ecx' = V (to_reg ecx s.addr_sz) in
-                 let ecx_stmt = Set (ecx', BinOp (Sub, Lval ecx', Const (Word.one s.addr_sz))) in
-                 let blk =
-                   [
-                     If (ecx_cond,
-                     v(*.Cfa.State.stmts*) @ (ecx_stmt :: zf_stmts),
-                     [Directive Default_unroll ; Jmp (A a')])
-                   ]
-                 in
-                 if not (s.repe || s.repne) then
-                   (*v.Cfa.State.stmts <-*) [ Directive (Unroll (Lval (V (T ecx)), 10000)) ] @ blk(**), ip(**)
-                 else
-                   begin
-                     let cmp = if s.repne then EQ else NEQ in
-                     let stmts =
-                       match (List.hd (List.tl (List.rev s.c))) with
-                       | '\xae' -> (unroll_scas cmp s 8)::blk
-                       | '\xaf' -> (unroll_scas cmp s s.addr_sz)::blk
-                    | _ -> blk
-                     in
-                     (*v.Cfa.State.stmts <- stmts*) stmts, ip
-                   end;
-                end(*;
-                v, ip*)
+              if s.ret then
+                v, ip
+              else
+                match List.hd v(*.Cfa.State.stmts*) with
+                | _ ->
+                   let a'  = Data.Address.add_offset s.a (Z.of_int s.o) in
+                   let zf_stmts =
+                             if s.repe || s.repne then
+                               [ If (Cmp (EQ, Lval (V (T fzf)), Const (c fzf_sz)), [Directive Default_unroll ; Jmp (A a')],
+                         [Jmp (A s.a (*v.Cfa.State.ip*)) ]) ]
+                             else
+                               [ Jmp (A s.a(*v.Cfa.State.ip*)) ]
+                   in
+                   let ecx' = V (to_reg ecx s.addr_sz) in
+                   let ecx_stmt = Set (ecx', BinOp (Sub, Lval ecx', Const (Word.one s.addr_sz))) in
+                   let blk =
+                     [
+                       If (ecx_cond,
+                       v(*.Cfa.State.stmts*) @ (ecx_stmt :: zf_stmts),
+                       [Directive Default_unroll ; Jmp (A a')])
+                     ]
+                   in
+                   if not (s.repe || s.repne) then
+                     (*v.Cfa.State.stmts <-*) [ Directive (Unroll (Lval (V (T ecx)), 10000)) ] @ blk(**), ip(**)
+                   else
+                     begin
+                       let cmp = if s.repne then EQ else NEQ in
+                       let stmts =
+                         match (List.hd (List.tl (List.rev s.c))) with
+                         | '\xae' -> (unroll_scas cmp s 8)::blk
+                         | '\xaf' -> (unroll_scas cmp s s.addr_sz)::blk
+                      | _ -> blk
+                       in
+                       (*v.Cfa.State.stmts <- stmts*) stmts, ip
+                     end;
+            end(*;
+            v, ip*)
 
         and decode_snd_opcode s =
             match getchar s with
@@ -2506,7 +2510,8 @@ struct
             buf        = text;
             rep        = false;
             repe       = false;
-            repne      = false
+            repne      = false;
+            ret        = false
         }
         in
         try
