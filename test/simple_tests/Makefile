@@ -41,8 +41,8 @@ tests: $(addsuffix .o,$(TESTS))
 	echo "Test summary"; \
 	echo "============"; \
 	number=$$(echo $(TESTS) | sed 's| |\n|g' | wc -l); \
-	numberf=$$(echo $(FAILINGTESTS) | sed 's| |\n|g' | wc -l); \
-	numbers=$$(echo $(SUCCESSTESTS) | sed 's| |\n|g' | wc -l); \
+	numberf=$$(echo $(FAILTESTS) | sed 's| |\n|g' | wc -l); \
+	numbers=$$(echo $(PASSTESTS) | sed 's| |\n|g' | wc -l); \
 	printf "Total tests: $${number}.\n"; \
 	printf "Expecting $${numbers} accepted programs and $${numberf} rejected programs.\n"; \
 	printf "Failed tests: $${failed}.\n"; \

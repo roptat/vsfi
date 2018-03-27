@@ -1,1 +1,0 @@
-guix environment ocaml-bincat --ad-hoc ocaml-bitstring $@

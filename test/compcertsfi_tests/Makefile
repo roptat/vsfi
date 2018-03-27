@@ -26,7 +26,14 @@ YELLOW=\e[33m
 GREEN=\e[32m
 BLUE=\e[34m
 
-tests: $(addsuffix .o,$(TESTS))
+tests:
+	@if ($(RUN_IN_ENV) $(CCOMP) --version >/dev/null 2>&1); then \
+		$(MAKE) real-tests ;\
+	else \
+		printf "$(BLUE)SKIP ALL$(RESET) compcert tests\n" ;\
+	fi
+
+real-tests: $(addsuffix .o,$(TESTS))
 	@failed=""; \
 	for t in $^; do \
 		test=$$(echo $$t | sed 's|.o$$||') ;\
